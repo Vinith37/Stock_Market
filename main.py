@@ -1,19 +1,8 @@
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import StandardScaler
 
-# ===== USER-TUNABLE COEFFICIENTS =====
-w_trend = 0.4
-w_vol = 0.2
-w_green = 0.2
-w_vwap = 0.2
-
-trend_scale = 0.10      # expected strong trend ~10%
-vol_scale = 0.30        # high vol ~30%
-vwap_scale = 0.05       # 5% deviation considered large
-
-# ======================================
-
-df = pd.read_csv("TITAN.csv")
+df = pd.read_excel("TITAN.xlsx")
 
 price_cols = [
     'OPEN', 'HIGH', 'LOW', 'CLOSE',
@@ -32,42 +21,42 @@ for col in price_cols:
 df['DATE'] = pd.to_datetime(df['DATE'], dayfirst=True)
 df = df.sort_values('DATE')
 
+# --- Trend ---
 df['SMA50'] = df['CLOSE'].rolling(50).mean()
 df['SMA200'] = df['CLOSE'].rolling(200).mean()
+df['Trend'] = (df['SMA50'] - df['SMA200']) / df['CLOSE']
 
-latest = df.iloc[-1]
+# --- Volatility ---
+df['Return'] = df['CLOSE'].pct_change()
+df['Vol20'] = df['Return'].rolling(20).std() * np.sqrt(252)
 
-# Raw metrics
-trend = (latest['SMA50'] - latest['SMA200']) / latest['CLOSE']
-df['returns'] = df['CLOSE'].pct_change()
-vol = df['returns'].std() * np.sqrt(252)
-green_ratio = (df['CLOSE'] > df['OPEN']).mean()
-vwap_dev = (latest['CLOSE'] - latest['VWAP']) / latest['VWAP']
+# --- Green Ratio ---
+df['Green'] = (df['CLOSE'] > df['OPEN']).astype(int)
+df['Green20'] = df['Green'].rolling(20).mean()
 
-# ===== NORMALIZATION =====
-T = trend / trend_scale
-V = vol / vol_scale
-G = (green_ratio - 0.5) / 0.1
-W = vwap_dev / vwap_scale
+# --- VWAP Deviation ---
+df['VWAP_Dev'] = (df['CLOSE'] - df['VWAP']) / df['VWAP']
 
-# ===== SCORE =====
-score = (
-    w_trend * T +
-    w_vol * V +
-    w_green * G +
-    w_vwap * W
-)
+# --- Target Variable ---
+df['Forward_Return_20d'] = df['CLOSE'].shift(-20) / df['CLOSE'] - 1
 
-# ===== STRIKE MAPPING =====
-if score > 1.0:
-    decision = "Far OTM (5–8%)"
-elif 0.3 < score <= 1.0:
-    decision = "Slight OTM (3–5%)"
-elif -0.3 <= score <= 0.3:
-    decision = "ATM"
-else:
-    decision = "ITM (2–5%)"
+# Drop NA rows
+df = df.dropna()
 
-# ===== OUTPUT =====
-print("Score:", round(score, 3))
-print("Strike Decision:", decision)
+
+X = df[['Trend', 'VWAP_Dev']]   # choose features
+y = df['Forward_Return_20d']
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+print(df.head())
+
+
+import statsmodels.api as sm
+
+X_scaled = sm.add_constant(X_scaled)
+
+model = sm.OLS(y, X_scaled).fit(cov_type='HC3')
+print(model.summary())
+
